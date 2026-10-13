@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#14213d">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>앞을 보세요 - 스몸비 방지 앱</title>
+<style>
+:root{--bg:#f2f6fb;--card:#ffffff;--ink:#14213d;--sub:#5b6b85;--ok:#1b9e77;--warn:#e63946;--line:#d6dfec;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0d1626;--card:#16233b;--ink:#eef3fb;--sub:#9fb0cc;--ok:#3ddc97;--warn:#ff5d6c;--line:#263756}}
+:root[data-theme="dark"]{--bg:#0d1626;--card:#16233b;--ink:#eef3fb;--sub:#9fb0cc;--ok:#3ddc97;--warn:#ff5d6c;--line:#263756}
+*{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Pretendard","Noto Sans KR",system-ui,sans-serif;line-height:1.5}
+main{max-width:480px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:26px;margin:8px 0 4px}
+p.lead{color:var(--sub);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:14px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.big{font-size:34px;font-weight:800}
+.lamp{width:14px;height:14px;border-radius:50%;background:var(--sub);display:inline-block;margin-right:8px}
+.lamp.on{background:var(--ok)}
+button,select{font:inherit;color:inherit}
+button{border:0;border-radius:12px;padding:14px;width:100%;font-weight:700;font-size:17px;background:var(--ink);color:var(--bg);cursor:pointer}
+button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);font-size:15px;padding:10px}
+select{padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--card)}
+button:focus-visible,select:focus-visible{outline:3px solid var(--ok);outline-offset:2px}
+small{color:var(--sub)}
+#alert{position:fixed;inset:0;background:var(--warn);color:#fff;display:none;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;z-index:10}
+#alert.show{display:flex;animation:blink .6s steps(2) infinite}
+#alert h2{font-size:48px;margin:0 0 12px}
+#alert p{font-size:20px;margin:0 0 28px}
+#alert button{background:#fff;color:var(--warn);max-width:260px}
+@keyframes blink{50%{filter:brightness(.8)}}
+@media (prefers-reduced-motion:reduce){#alert.show{animation:none}}
+</style>
+</head>
+<body>
+<main>
+  <h1>앞을 보세요</h1>
+  <p class="lead">걸으면서 폰을 보면 알려주고, 너무 오래 쓰면 쉬라고 알려줘요.</p>
+
+  <div class="card">
+    <div class="row"><span><span class="lamp" id="lamp"></span><b id="state">꺼짐</b></span><span id="walk">-</span></div>
+    <small id="hint">시작을 누르고, 이 화면을 켠 채로 걸어 보세요.</small>
+  </div>
+
+  <div class="card">
+    <div class="row"><span>연속 사용 시간</span><span class="big" id="timer">0:00</span></div>
+    <div class="row" style="margin-top:10px"><label for="limit">쉬라고 알려줄 시간</label>
+      <select id="limit"><option value="1">1분 (테스트)</option><option value="10">10분</option><option value="30" selected>30분</option><option value="60">60분</option></select></div>
+  </div>
+
+  <div class="card"><div class="row"><span>오늘 걷다가 폰 본 횟수</span><span class="big" id="count">0</span></div></div>
+
+  <button id="start">시작하기</button>
+  <div style="height:10px"></div>
+  <button class="ghost" id="fake">걷는 중인 척 테스트하기</button>
+  <div style="height:10px"></div>
+  <button class="ghost" id="vtest">진동·소리 테스트</button>
+  <label id="hap" aria-hidden="true" style="position:absolute;left:-9999px;opacity:0"><input type="checkbox" switch tabindex="-1"></label>
+  <p><small>이 웹앱은 화면이 켜져 있고 이 페이지가 열려 있을 때만 작동해요. 다른 앱을 쓰거나 화면이 꺼지면 멈춰요. 진동은 안드로이드 크롬에서만 돼요.</small></p>
+</main>
+
+<div id="alert" role="alertdialog" aria-live="assertive">
+  <h2 id="atitle">앞을 보세요!</h2>
+  <p id="atext">걸으면서 폰을 보고 있어요.</p>
+  <button id="close">알겠어요</button>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let running = false, steps = [], lastStepAt = 0, base = 9.8, startTime = 0, fakeUntil = 0;
+let alertOpen = false, restAlerted = false, count = 0, lastWarn = 0;
+
+let actx = null;
+function initAudio(){ try{ actx = actx || new (window.AudioContext||window.webkitAudioContext)(); actx.resume(); }catch(e){} }
+function beep(){ try{ if(!actx) return; const o=actx.createOscillator(), g=actx.createGain(); o.frequency.value=880; g.gain.value=0.3; o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime+0.25); }catch(e){} }
+function buzz(p){
+  try{ navigator.vibrate && navigator.vibrate(p); }catch(e){}
+  [0,250,500].forEach(d => setTimeout(() => { try{ $('hap').click(); }catch(e){} beep(); }, d));
+}
+function showAlert(t, x){
+  $('atitle').textContent = t; $('atext').textContent = x;
+  $('alert').classList.add('show'); alertOpen = true; buzz([400,150,400,150,400]);
+}
+$('close').onclick = () => { $('alert').classList.remove('show'); alertOpen = false; };
+
+function onMotion(e){
+  const a = e.accelerationIncludingGravity; if(!a) return;
+  const m = Math.sqrt((a.x||0)**2 + (a.y||0)**2 + (a.z||0)**2);
+  base = base*0.9 + m*0.1;
+  const now = Date.now();
+  if(m - base > 2.2 && now - lastStepAt > 320){ lastStepAt = now; steps.push(now); }
+}
+
+function isWalking(){
+  const now = Date.now();
+  steps = steps.filter(t => now - t < 4000);
+  return steps.length >= 4 || now < fakeUntil;
+}
+
+function tick(){
+  if(!running) return;
+  const now = Date.now();
+  const sec = Math.floor((now - startTime)/1000);
+  $('timer').textContent = Math.floor(sec/60) + ':' + String(sec%60).padStart(2,'0');
+  const walking = isWalking();
+  $('walk').textContent = walking ? '🚶 걷는 중' : '🧍 서 있음';
+  const using = document.visibilityState === 'visible';
+  if(walking && using && !alertOpen && now - lastWarn > 8000){
+    lastWarn = now; count++; $('count').textContent = count;
+    showAlert('앞을 보세요!', '걸으면서 폰을 보고 있어요. 위험해요!');
+  }
+  const limit = parseInt($('limit').value,10)*60;
+  if(sec >= limit && !restAlerted && !alertOpen){
+    restAlerted = true;
+    showAlert('잠깐 쉬어요', $('limit').selectedOptions[0].text.replace(' (테스트)','') + ' 동안 계속 봤어요. 눈과 목을 쉬게 해 주세요.');
+  }
+}
+
+$('start').onclick = async () => {
+  if(running){ running = false; window.removeEventListener('devicemotion', onMotion);
+    $('start').textContent = '시작하기'; $('state').textContent = '꺼짐'; $('lamp').classList.remove('on'); return; }
+  try{
+    if(typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function'){
+      const r = await DeviceMotionEvent.requestPermission();
+      if(r !== 'granted'){ $('hint').textContent = '움직임 센서 허락이 필요해요. 대신 아래 테스트 버튼을 써 보세요.'; }
+    }
+  }catch(e){ $('hint').textContent = '센서를 쓸 수 없어요. 아래 테스트 버튼으로 체험해 보세요.'; }
+  window.addEventListener('devicemotion', onMotion);
+  try{ if(navigator.wakeLock) await navigator.wakeLock.request('screen'); }catch(e){}
+  running = true; startTime = Date.now(); restAlerted = false; steps = [];
+  $('start').textContent = '멈추기'; $('state').textContent = '지켜보는 중'; $('lamp').classList.add('on');
+};
+
+$('vtest').onclick = () => {
+  initAudio(); buzz([300]);
+  const v = ('vibrate' in navigator) ? '이 폰은 진동 명령을 지원해요.' : '이 브라우저는 진동 명령을 지원하지 않아요(아이폰 등). 소리와 약한 촉감으로 대신 알려요.';
+  $('hint').textContent = v + ' 아무것도 안 느껴지면 무음 모드와 볼륨을 확인해 보세요.';
+};
+document.addEventListener('click', initAudio);
+$('fake').onclick = () => { fakeUntil = Date.now() + 6000; if(!running) $('start').click(); };
+document.addEventListener('visibilitychange', () => { if(document.visibilityState==='visible') tick(); });
+setInterval(tick, 1000);
+if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js').catch(()=>{});}
+</script>
+</body>
+</html>
