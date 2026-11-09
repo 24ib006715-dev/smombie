@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>스몸비 지킴이</title>
+<style>
+:root{--bg:#f6f7fb;--card:#fff;--text:#1d2433;--sub:#5d667a;--ok:#1f9d55;--bad:#e5322d;--accent:#3157e0;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#12151c;--card:#1c212c;--text:#eef1f7;--sub:#9aa3b5;--accent:#7b97ff}}
+*{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Noto Sans KR",sans-serif;transition:background .15s}
+body.alert{background:var(--bad);color:#fff}
+main{max-width:480px;margin:0 auto;padding:16px}
+h1{font-size:24px;margin:8px 0 4px}
+p{line-height:1.55;color:var(--sub);margin:4px 0 12px}
+body.alert p,body.alert .label{color:#fff}
+.card{background:var(--card);border-radius:16px;padding:16px;margin:12px 0;color:var(--text)}
+button{font:inherit;font-weight:700;border:0;border-radius:14px;padding:16px;width:100%;background:var(--accent);color:#fff;margin:6px 0}
+button.ghost{background:transparent;color:var(--accent);border:2px solid var(--accent)}
+.big{font-size:20px;padding:20px}
+.bar{height:18px;background:rgba(128,128,128,.25);border-radius:9px;overflow:hidden}
+.fill{height:100%;width:0;background:var(--ok);transition:width .08s}
+.status{font-size:28px;font-weight:800;text-align:center;margin:8px 0}
+.label{color:var(--sub);font-size:14px;display:flex;justify-content:space-between;margin:10px 0 4px}
+input[type=range],select{width:100%;font:inherit;padding:6px}
+#msg{color:var(--bad);font-weight:700;min-height:1.4em}
+#qr{display:flex;justify-content:center;padding:12px;background:#fff;border-radius:12px;margin-top:8px}
+.hide{display:none}
+</style>
+</head>
+<body>
+<main>
+<h1>📵 스몸비 지킴이</h1>
+<p>걸으면서 폰을 보면 바로 알려 줘요. 시작하기를 누르고 걸어 보세요!</p>
+
+<div class="card">
+  <button id="start" class="big">▶ 시작하기</button>
+  <div id="msg"></div>
+</div>
+
+<div id="live" class="card hide">
+  <div id="status" class="status">🧍 가만히 있어요</div>
+  <div class="label"><span>흔들림</span><span id="num">0.0</span></div>
+  <div class="bar"><div id="fill" class="fill"></div></div>
+  <div class="label"><span>⏱ 이 앱을 쓴 시간</span><span id="timer">0분 0초</span></div>
+</div>
+
+<div class="card">
+  <div class="label"><span>민감도 (높을수록 더 예민)</span><span id="sensVal">8</span></div>
+  <input id="sens" type="range" min="1" max="10" value="8">
+  <div class="label"><span>사용시간 알림</span></div>
+  <select id="limit">
+    <option value="1">1분 (발표용)</option>
+    <option value="5">5분</option>
+    <option value="10">10분</option>
+    <option value="30">30분</option>
+  </select>
+</div>
+
+<div class="card">
+  <button id="demo" class="ghost">🔔 경고 미리보기 (연습용)</button>
+  <button id="qrBtn" class="ghost">📱 친구에게 큐알 보여주기</button>
+  <div id="qr" class="hide"></div>
+</div>
+<p>※ 웹페이지는 다른 앱 사용시간은 알 수 없어요. 이 앱을 켜 둔 시간만 재요.</p>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+(function(){
+  var $=function(i){return document.getElementById(i)};
+  var running=false, level=0, base=9.8, score=0, last=0, walking=false;
+  var audio=null, wake=null, startTime=0, nextLimit=0, alertUntil=0, lastBeep=0;
+
+  function beep(){
+    try{
+      if(!audio) return;
+      var o=audio.createOscillator(), g=audio.createGain();
+      o.type="square"; o.frequency.value=880; g.gain.value=0.25;
+      o.connect(g); g.connect(audio.destination);
+      o.start(); o.stop(audio.currentTime+0.25);
+    }catch(e){}
+    try{ if(navigator.vibrate) navigator.vibrate([200,100,200]); }catch(e){}
+  }
+
+  function setAlert(on,text){
+    document.body.classList.toggle("alert",on);
+    $("status").textContent = on ? (text||"🚨 걸으면서 폰 보지 마세요!") : "🧍 가만히 있어요";
+  }
+
+  function threshold(){ return 2.2 - Number($("sens").value)*0.18; }
+
+  function onMotion(e){
+    var a=e.accelerationIncludingGravity;
+    if(!a || a.x===null) return;
+    var now=performance.now(), dt=last? (now-last)/1000 : 0.016; last=now;
+    if(dt>0.2) dt=0.2;
+    var mag=Math.sqrt(a.x*a.x+a.y*a.y+a.z*a.z);
+    base=base*0.92+mag*0.08;
+    var dev=Math.abs(mag-base);
+    level=level*0.7+dev*0.3;
+    var thr=threshold();
+    if(level>thr) score=Math.min(1.5,score+dt); else score=Math.max(0,score-dt*0.5);
+    if(!walking && score>0.35) walking=true;
+    if(walking && score<0.1) walking=false;
+    $("num").textContent=level.toFixed(1);
+    var pct=Math.min(100,level/(thr*2)*100);
+    $("fill").style.width=pct+"%";
+    $("fill").style.background = walking ? "var(--bad)" : "var(--ok)";
+    if(walking){
+      setAlert(true);
+      if(now-lastBeep>1800){ lastBeep=now; beep(); }
+    } else if(now>alertUntil){
+      setAlert(false);
+    }
+  }
+
+  function tick(){
+    if(!running) return;
+    var s=Math.floor((Date.now()-startTime)/1000);
+    $("timer").textContent=Math.floor(s/60)+"분 "+(s%60)+"초";
+    if(s>=nextLimit){
+      nextLimit+=Number($("limit").value)*60;
+      alertUntil=performance.now()+4000;
+      setAlert(true,"⏰ 폰을 너무 오래 봤어요! 쉬어요");
+      beep();
+    }
+  }
+
+  async function getWake(){
+    try{ if(navigator.wakeLock) wake=await navigator.wakeLock.request("screen"); }catch(e){}
+  }
+  document.addEventListener("visibilitychange",function(){
+    if(running && document.visibilityState==="visible") getWake();
+  });
+
+  $("sens").addEventListener("input",function(){ $("sensVal").textContent=$("sens").value; });
+
+  $("start").addEventListener("click",async function(){
+    var msg=$("msg"); msg.textContent="";
+    try{
+      var AC=window.AudioContext||window.webkitAudioContext;
+      if(AC){ audio=audio||new AC(); if(audio.resume) await audio.resume(); }
+    }catch(e){}
+    if(typeof DeviceMotionEvent==="undefined"){
+      msg.textContent="이 기기는 움직임 센서가 없어요. 폰으로 열어 주세요.";
+      return;
+    }
+    if(typeof DeviceMotionEvent.requestPermission==="function"){
+      try{
+        var r=await DeviceMotionEvent.requestPermission();
+        if(r!=="granted"){
+          msg.textContent="센서를 허락하지 않았어요. 설정 → Safari → 모션 및 방향 접근을 켜고, 페이지를 새로고침한 뒤 다시 눌러 주세요.";
+          return;
+        }
+      }catch(e){
+        msg.textContent="센서를 켤 수 없어요. 새로고침 후 시작하기를 다시 눌러 주세요.";
+        return;
+      }
+    }
+    if(!running){
+      running=true;
+      window.addEventListener("devicemotion",onMotion);
+      startTime=Date.now();
+      nextLimit=Number($("limit").value)*60;
+      setInterval(tick,500);
+    }
+    getWake();
+    $("live").classList.remove("hide");
+    $("start").textContent="✅ 켜져 있어요";
+  });
+
+  $("limit").addEventListener("change",function(){
+    if(running){ nextLimit=Math.floor((Date.now()-startTime)/1000)+Number($("limit").value)*60; }
+  });
+
+  $("demo").addEventListener("click",async function(){
+    try{
+      var AC=window.AudioContext||window.webkitAudioContext;
+      if(AC){ audio=audio||new AC(); if(audio.resume) await audio.resume(); }
+    }catch(e){}
+    alertUntil=performance.now()+3000;
+    setAlert(true);
+    beep();
+    setTimeout(function(){ if(performance.now()>=alertUntil && !walking) setAlert(false); },3100);
+  });
+
+  var qrDone=false;
+  $("qrBtn").addEventListener("click",function(){
+    var box=$("qr");
+    box.classList.toggle("hide");
+    if(!qrDone && !box.classList.contains("hide")){
+      qrDone=true;
+      try{
+        new QRCode(box,{text:location.href.split("#")[0],width:220,height:220});
+      }catch(e){
+        box.textContent="큐알을 만들지 못했어요. 주소를 직접 알려 주세요: "+location.href;
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>
